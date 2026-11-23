@@ -1,0 +1,15 @@
+{% extends 'base.html' %}{% block content %}
+<h1>{{ title }}</h1>
+{% if not state %}<div class="notice error">This laptop has not been connected to the cloud yet. Ask support to run the laptop setup.</div>{% else %}
+<div class="panel record-summary">
+ <p><strong>Shop</strong>{{ state.branch.name }}</p>
+ <p><strong>Work waiting to reach the cloud</strong>{{ waiting }} change{{ waiting|pluralize }}</p>
+ <p><strong>Last synced</strong>{% if state.last_success %}{{ state.last_success|timesince }} ago{% else %}never{% endif %}</p>
+ <p><strong>Last attempt</strong>{% if state.last_attempt %}{{ state.last_attempt|timesince }} ago{% else %}—{% endif %}</p>
+ <p><strong>Open conflicts (owner to review)</strong>{{ state.hub_conflicts }}</p>
+ <p><strong>Laptop number</strong>{{ state.node_no }}</p>
+</div>
+{% if state.last_error %}<div class="notice">{{ state.last_error }} Keep working: everything is saved on this laptop and is sent automatically when the internet returns.</div>{% endif %}
+{% endif %}
+{% if hub %}<p class="muted">Cloud ERP: <a href="{{ hub }}" target="_blank" rel="noopener">{{ hub }}</a></p>{% endif %}
+{% endblock %}

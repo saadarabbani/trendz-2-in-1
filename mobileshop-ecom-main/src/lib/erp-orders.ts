@@ -1,0 +1,152 @@
+import { type CurrentVariant, roundMoney } from "@/lib/cart";
+import { provinceLabel } from "@/lib/pakistan";
+import type { PaymentMethod } from "@/lib/payment";
+
+// Orders go to the ERP's order API (POST /api/online/orders/, header X-API-Key). Prices and totals are recomputed by
+// the ERP from its own data; what we send is only compared against them. The ERP's response decides everything.
+
+export type Customer = { name: string; phone: string; email?: string; line1: string; line2?: string; city: string; province: string };
+
+export type OrderInput = {
+  /** Our order number: stable across retries, so a double click or a retry never creates a second order. */
+  ref: string;
+  customer: Customer;
+  notes?: string;
+  paymentMethod?: PaymentMethod;
+  /** Optional transaction id the customer typed for a prepaid method. */
+  paymentReference?: string;
+  lines: { variant: CurrentVariant; quantity: number }[];
+  deliveryFee: number;
+  expectedTotal: number;
+  /** The customer's internet address. The ERP counts orders per address in its database, which all copies of this site share (this site's own limiter is per server). */
+  clientIp?: string;
+};
+
+/** The body for POST /api/online/orders/. Pure, so it is easy to test. */
+export function buildOrderPayload(o: OrderInput) {
+  const address = [o.customer.line1, o.customer.line2, provinceLabel(o.customer.province)].filter(Boolean).join(", ");
+  return {
+    external_ref: o.ref,
+    ...(o.clientIp && o.clientIp !== "unknown" && { client_ip: o.clientIp }),
+    customer: {
+      name: o.customer.name,
+      phone: o.customer.phone,
+      ...(o.customer.email && { email: o.customer.email }),
+      address,
+      city: o.customer.city,
+      province: provinceLabel(o.customer.province),      // the ERP prices delivery by province
+    },
+    payment_method: o.paymentMethod ?? "Cash on Delivery",
+    ...(o.paymentReference && { payment_reference: o.paymentReference }),
+    // Money goes as text with exactly two decimals: a JSON number can carry binary-float noise (269997.30000000005) that the ERP refuses.
+    delivery_fee: o.deliveryFee.toFixed(2),
+    expected_total: o.expectedTotal.toFixed(2),
+    ...(o.notes && { notes: o.notes }),
+    items: o.lines.map(({ variant: v, quantity }) => ({
+      product_id: v.productId,
+      // Phones: condition, pta_status and device_type exactly as in the web_variants row.
+      // Accessories have none of these: omit them rather than send empty strings.
+      ...(v.condition && { condition: v.condition }),
+      ...(v.pta && { pta_status: v.pta }),
+      ...(v.type && { device_type: v.type }),
+      price: v.price.toFixed(2),
+      quantity,
+    })),
+  };
+}
+
+export type PlaceResult =
+  | { ok: true; ref: string; total: number; status: string; created: boolean }
+  | { ok: false; code: "PRICE_CHANGED" | "OUT_OF_STOCK" | "CONFLICT" | "INVALID" | "UNAVAILABLE" | "RATE_LIMITED"; message: string; status: number };
+
+type ErpBody = { error?: string; message?: string; external_ref?: string; total?: number | string; status?: string; created?: boolean };
+
+/** Maps the ERP's answer to what the checkout needs (see section 3 of the integration guide). */
+export function classifyPlaceResponse(status: number, body: ErpBody | null, fallbackRef: string): PlaceResult {
+  const message = String(body?.error ?? body?.message ?? "").trim();
+  if (status === 201 || status === 200) {
+    return { ok: true, ref: body?.external_ref ?? fallbackRef, total: roundMoney(Number(body?.total ?? 0)), status: body?.status ?? "New", created: status === 201 || body?.created !== false };
+  }
+  if (status === 409) {
+    // Stock words first: "no longer available (it may have been sold, or its price changed)" is a sold-out message.
+    // A payment method the shop switched off is "not available right now" too, but it is not a stock problem: check it first.
+    const code = /payment method/i.test(message) ? "CONFLICT" : /stock|sold|available|quantity|exist/i.test(message) ? "OUT_OF_STOCK" : /price/i.test(message) ? "PRICE_CHANGED" : "CONFLICT";
+    return { ok: false, code, message: message || "Some items changed. Please review your cart.", status };
+  }
+  // The ERP refuses a visitor who orders faster than a person would, or who already has orders waiting for the confirmation call. Its words are written for customers.
+  if (status === 429) return { ok: false, code: "RATE_LIMITED", message: message || "Too many orders in a short time. Please wait a little and try again.", status };
+  if (status === 400) return { ok: false, code: "INVALID", message: message || "Please check your details and try again.", status };
+  // 401 (wrong key / API off), 5xx, anything else: the customer can only try again later.
+  return { ok: false, code: "UNAVAILABLE", message: "We couldn't place your order right now. Please try again in a few minutes.", status };
+}
+
+export class ErpOrderConfigError extends Error {}
+
+function config() {
+  const url = process.env.ERP_API_URL?.replace(/\/+$/, "");
+  const key = process.env.ERP_API_KEY;
+  if (!url || !key) throw new ErpOrderConfigError("Set ERP_API_URL and ERP_API_KEY (server-side only).");
+  return { url, key };
+}
+
+export async function placeErpOrder(order: OrderInput, doFetch: typeof fetch = fetch): Promise<PlaceResult> {
+  const { url, key } = config();
+  let response: Response;
+  try {
+    response = await doFetch(`${url}/api/online/orders/`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-API-Key": key },
+      body: JSON.stringify(buildOrderPayload(order)),
+      cache: "no-store",
+      signal: AbortSignal.timeout(20_000),
+    });
+  } catch (e) {
+    console.error("[erp-orders] could not reach the ERP", e);
+    return { ok: false, code: "UNAVAILABLE", message: "We couldn't place your order right now. Please try again in a few minutes.", status: 0 };
+  }
+  const body = (await response.json().catch(() => null)) as ErpBody | null;
+  if (response.status === 401) console.error("[erp-orders] 401 FROM THE ERP: ERP_API_KEY is wrong or the online API is switched off. Orders are failing until this is fixed.");
+  return classifyPlaceResponse(response.status, body, order.ref);
+}
+
+export type OrderStatus = {
+  ref: string;
+  status: string; // New | Dispatched | Delivered | Cancelled (the ERP's working status)
+  /** The order's main status: Unconfirmed (we have not called you yet), Confirmed, Fulfilled, Cancelled or Returned. */
+  orderStatus: string | null;
+  /** The step inside the status: Confirmed, Processing, Ready for Dispatch, In Transit, Return Requested, Returned, Refunded… */
+  stage: string | null;
+  paymentStatus: string | null;
+  courier: string | null;
+  tracking: string | null;
+  total: number;
+  placedOn: string | null;
+  dispatchedOn: string | null;
+  deliveredOn: string | null;
+};
+
+/** Tracking: GET /api/online/orders/{ref}/. Returns null when the ERP does not know the reference. */
+export async function getErpOrder(ref: string): Promise<OrderStatus | null> {
+  const { url, key } = config();
+  const response = await fetch(`${url}/api/online/orders/${encodeURIComponent(ref)}/`, {
+    headers: { "X-API-Key": key },
+    cache: "no-store",
+    signal: AbortSignal.timeout(15_000),
+  });
+  if (response.status === 404) return null;
+  if (!response.ok) throw new Error(`The ERP answered ${response.status}`);
+  const b = (await response.json()) as Record<string, string | number | null>;
+  return {
+    ref: String(b.external_ref ?? ref),
+    status: String(b.status ?? "New"),
+    orderStatus: b.order_status ? String(b.order_status) : null,
+    stage: b.stage ? String(b.stage) : null,
+    paymentStatus: b.payment_status ? String(b.payment_status) : null,
+    courier: b.courier ? String(b.courier) : null,
+    tracking: b.tracking ? String(b.tracking) : null,
+    total: roundMoney(Number(b.total ?? 0)),
+    placedOn: b.placed_on ? String(b.placed_on) : null,
+    dispatchedOn: b.dispatched_on ? String(b.dispatched_on) : null,
+    deliveredOn: b.delivered_on ? String(b.delivered_on) : null,
+  };
+}

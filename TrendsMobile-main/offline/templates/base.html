@@ -1,0 +1,67 @@
+{% load static %}<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="theme-color" content="#0b0c0f">
+<title>{{ title }} · Covison ERP</title>
+<link rel="icon" href="{% static 'covison-logo-mark.png' %}" type="image/png">
+<link rel="preload" href="{% static 'fonts/inter-var.woff2' %}" as="font" type="font/woff2" crossorigin>
+<link rel="stylesheet" href="{% static 'css/tokens.css' %}" data-turbo-track="reload">
+<link rel="stylesheet" href="{% static 'css/base.css' %}" data-turbo-track="reload">
+<link rel="stylesheet" href="{% static 'css/layout.css' %}" data-turbo-track="reload">
+<link rel="stylesheet" href="{% static 'css/components.css' %}" data-turbo-track="reload">
+<link rel="stylesheet" href="{% static 'css/pages.css' %}" data-turbo-track="reload">
+<meta name="turbo-refresh-method" content="morph"><meta name="turbo-refresh-scroll" content="preserve">
+<script>try{if(sessionStorage.getItem('cov-shell'))document.documentElement.classList.add('shell-seen');else sessionStorage.setItem('cov-shell','1')}catch(e){}</script>
+<meta name="turbo-cache-control" content="no-cache">
+<script src="{% static 'vendor/turbo-8.0.13.js' %}" data-turbo-track="reload" defer></script>
+<script src="{% static 'page.js' %}" data-turbo-track="reload" defer></script>
+<script src="{% static 'offline.js' %}" data-turbo-track="reload" defer></script><script src="{% static 'payments.js' %}" data-turbo-track="reload" defer></script><script src="{% static 'shell.js' %}" data-turbo-track="reload" defer></script><script src="{% static 'ui.js' %}" data-turbo-track="reload" defer></script><script src="{% static 'live.js' %}" data-turbo-track="reload" defer></script><script src="{% static 'scan.js' %}" data-zxing="{% static 'vendor/zxing-library-0.21.3.min.js' %}" data-turbo-track="reload" defer></script><script src="{% static 'words.js' %}" data-turbo-track="reload" defer></script>
+</head>
+<body class="app">
+<a class="skip-link" href="#content">Skip to content</a>
+<svg width="0" height="0" style="position:absolute" aria-hidden="true" focusable="false"><defs>
+<symbol id="i-home" viewBox="0 0 24 24"><path d="M3 11l9-8 9 8M5 10v10h5v-6h4v6h5V10"/></symbol>
+<symbol id="i-phones" viewBox="0 0 24 24"><rect x="7" y="2.5" width="10" height="19" rx="2.5"/><path d="M11 18.5h2"/></symbol>
+<symbol id="i-buy" viewBox="0 0 24 24"><path d="M6 6h14l-1.6 8.5H8L6 3H3M9 20h.01M17 20h.01"/></symbol>
+<symbol id="i-sell-pos" viewBox="0 0 24 24"><rect x="3" y="5" width="18" height="14" rx="3"/><path d="M3 10h18M7 15h3"/></symbol>
+<symbol id="i-exchanges" viewBox="0 0 24 24"><path d="M7 7h12l-3-3M17 17H5l3 3"/></symbol>
+<symbol id="i-stock" viewBox="0 0 24 24"><path d="M3 7.5L12 3l9 4.5v9L12 21l-9-4.5zM3 7.5l9 4.5 9-4.5M12 12v9"/></symbol>
+<symbol id="i-customers-suppliers" viewBox="0 0 24 24"><circle cx="9" cy="8" r="3.5"/><path d="M2.5 20c.5-3.6 3.2-5.5 6.5-5.5s6 1.9 6.5 5.5M16 4.8a3.5 3.5 0 010 6.4M18 14.8c2 .6 3.2 2.3 3.5 5.2"/></symbol>
+<symbol id="i-payments-expenses" viewBox="0 0 24 24"><rect x="3" y="6" width="18" height="12" rx="3"/><circle cx="12" cy="12" r="2.6"/></symbol>
+<symbol id="i-staff" viewBox="0 0 24 24"><circle cx="12" cy="8" r="3.8"/><path d="M4.5 21c.6-4 3.6-6 7.5-6s6.9 2 7.5 6"/></symbol>
+<symbol id="i-warranty" viewBox="0 0 24 24"><path d="M12 3l8 3v6c0 4.5-3.2 7.8-8 9-4.8-1.2-8-4.5-8-9V6z"/><path d="M8.5 12l2.5 2.5 4.5-5"/></symbol>
+<symbol id="i-reports" viewBox="0 0 24 24"><path d="M4 20V10M10 20V4M16 20v-8M22 20H2"/></symbol>
+<symbol id="i-money" viewBox="0 0 24 24"><path d="M4 7h16M4 12h16M4 17h10"/></symbol>
+<symbol id="i-settings" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 00.3 1.9l.1.1a2 2 0 11-2.8 2.8l-.1-.1a1.7 1.7 0 00-1.9-.3 1.7 1.7 0 00-1 1.5V21a2 2 0 11-4 0v-.1a1.7 1.7 0 00-1.1-1.5 1.7 1.7 0 00-1.9.3l-.1.1a2 2 0 11-2.8-2.8l.1-.1a1.7 1.7 0 00.3-1.9 1.7 1.7 0 00-1.5-1H3a2 2 0 110-4h.1a1.7 1.7 0 001.5-1.1 1.7 1.7 0 00-.3-1.9l-.1-.1a2 2 0 112.8-2.8l.1.1a1.7 1.7 0 001.9.3h0a1.7 1.7 0 001-1.5V3a2 2 0 114 0v.1a1.7 1.7 0 001 1.5 1.7 1.7 0 001.9-.3l.1-.1a2 2 0 112.8 2.8l-.1.1a1.7 1.7 0 00-.3 1.9v0a1.7 1.7 0 001.5 1H21a2 2 0 110 4h-.1a1.7 1.7 0 00-1.5 1z"/></symbol>
+<symbol id="i-menu" viewBox="0 0 24 24"><path d="M4 7h16M4 12h16M4 17h16"/></symbol>
+<symbol id="i-out" viewBox="0 0 24 24"><path d="M15 4h3a2 2 0 012 2v12a2 2 0 01-2 2h-3M10 8l-4 4 4 4M6 12h10"/></symbol>
+</defs></svg>
+{% firstof branch.pk request.GET.branch as qs %}
+<header class="app-header">
+  <button class="sidebar-toggle" type="button" data-menu-toggle aria-controls="main-navigation" aria-expanded="false" aria-label="Open menu"><svg class="ico" width="20" height="20"><use href="#i-menu"/></svg></button>
+  <div class="welcome"><span>Welcome{% if who_shop %} · {{ who_shop }}{% endif %}</span><strong>{{ who_name|default:user.get_username }}</strong></div>
+  <div class="header-end">
+    <button type="button" class="header-search" data-open-search aria-label="Search phones, customers and documents"><svg class="ico" width="16" height="16" viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="M20 20l-3.5-3.5"/></svg><span>Search IMEI, customer, invoice…</span><kbd>Ctrl K</kbd></button>
+    {% if sync_badge %}<a class="tag{% if sync_badge.error %} error{% endif %}" href="{% url 'sync_status' %}" data-sync-badge>{{ sync_badge.label }}{% if sync_badge.conflicts %} · {{ sync_badge.conflicts }} conflict{{ sync_badge.conflicts|pluralize }}{% endif %}</a>{% endif %}
+    <span class="tag">Pakistan · PKR</span>
+    <form action="{% url 'logout' %}" method="post">{% csrf_token %}<button aria-label="Sign out"><svg class="ico" width="17" height="17"><use href="#i-out"/></svg>Sign out</button></form>
+  </div>
+</header>
+<aside id="main-navigation" class="sidebar" aria-label="Main navigation">
+  <a href="{% url 'dashboard' %}" class="brand"><img src="{% static 'covison-logo-mark.png' %}" alt=""><span>Covison ERP<small>Mobile shop suite</small></span></a>
+  {% if not online_only %}<div class="quick"><a href="{% url 'pos' %}" class="primary-nav">New Sale</a><a href="{% url 'bulk_purchase' %}" class="primary-nav">New Purchase</a></div>{% endif %}
+  {% for section in menu %}{% if section.items %}<details{% if section.open %} open{% endif %}><summary><svg class="ico"><use href="#i-{{ section.icon }}"/></svg>{{ section.title }}{% if online_orders_path and section.title == 'Orders' or online_orders_path and section.title == 'Online Store' %}<span class="nav-badge" data-live-badge="online"{% if not online_badge %} hidden{% endif %}>{{ online_badge }}</span>{% endif %}</summary>{% for item in section.items %}<a href="{{ item.url }}"{% if item.current %} aria-current="page"{% endif %}>{{ item.label }}{% if online_orders_path and item.url == online_orders_path %}<span class="nav-badge" data-live-badge="online"{% if not online_badge %} hidden{% endif %}>{{ online_badge }}</span>{% endif %}</a>{% endfor %}</details>{% else %}<a href="{{ section.url }}"><svg class="ico"><use href="#i-{{ section.icon }}"/></svg>{{ section.title }}{% if shop_orders_path and section.url == shop_orders_path %}<span class="nav-badge" data-live-badge="shop"{% if not shop_badge %} hidden{% endif %}>{{ shop_badge }}</span>{% endif %}</a>{% endif %}{% endfor %}
+</aside>
+<main class="app-main" id="content" tabindex="-1">{% if request.resolver_match.url_name != 'dashboard' %}<div class="page-back"><button type="button" data-go-back aria-label="Go back to the previous page">← Back</button></div>{% endif %}{% block content %}{% endblock %}</main>
+<footer class="app-footer" role="contentinfo">
+  <div class="foot-credit"><img src="{% static 'covison-logo-mark.png' %}" alt="" width="22" height="22"><span>Designed &amp; developed by <a href="https://covison.com" rel="noopener">covison.com</a></span></div>
+  <span class="foot-rule" aria-hidden="true"></span>
+  <div class="foot-owner">This ERP is the property of <strong>{{ owner_company|default:"the business that operates it" }}</strong> &middot; &copy; {% now "Y" %} All rights reserved</div>
+</footer>
+<div class="toast-region" aria-live="polite" aria-atomic="false">{% for message in messages %}<div class="toast {{ message.tags }}" role="{% if message.tags == 'error' %}alert{% else %}status{% endif %}"><p>{{ message }}</p><button type="button" aria-label="Dismiss">&#10005;</button></div>{% endfor %}</div>
+<dialog id="confirm-dialog" data-turbo-permanent aria-labelledby="confirm-title"><div class="dialog-body"><h2 id="confirm-title">Please confirm</h2><p data-confirm-message></p></div><div class="dialog-actions"><button type="button" data-confirm-cancel>Go back</button><button type="button" class="primary" data-confirm-ok>Yes, continue</button></div></dialog>
+<dialog id="palette" data-turbo-permanent data-url="{% url 'search' %}" aria-label="Search"><input class="palette-input" type="search" placeholder="Search IMEI, phone, customer, invoice or a page…" autocomplete="off" aria-label="Search"><ul class="palette-list" role="listbox"></ul><p class="palette-empty" hidden>No matches.</p><div class="palette-foot"><span>&#8593;&#8595; move</span><span>Enter open</span><span>Esc close</span></div></dialog>
+{% block scripts %}{% endblock %}
+</body></html>

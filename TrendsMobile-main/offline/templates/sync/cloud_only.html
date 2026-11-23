@@ -1,0 +1,6 @@
+{% extends 'base.html' %}{% block content %}
+<h1>{{ title }}</h1>
+<div class="notice error"><p>This laptop cannot change {{ what }}: they are shared by every shop, so they are changed only in the cloud ERP.</p>
+<p>Nothing was saved. Sales, purchases, returns and payments still work here, online or offline.</p></div>
+{% if hub %}<p>When the internet is working, open the cloud ERP: <a href="{{ hub }}" target="_blank" rel="noopener">{{ hub }}</a></p>{% endif %}
+{% endblock %}

@@ -1,0 +1,25 @@
+# A shop laptop ("node"): the same stack as compose.yaml plus the sync agent. Start with
+#   docker compose -f compose.yaml -f compose.node.yaml up -d
+# (Setup-ShopLaptop.ps1 does this). Works fully without internet; syncs with the cloud ERP whenever it is reachable.
+name: covison-offline
+services:
+  web:
+    environment:
+      COVISON_NODE: "1"
+    networks: [local, edge]       # reaches the cloud to check a password while online (offline sign-in uses the kept hash)
+  sync:
+    image: covison/offline:development
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      COVISON_NODE: "1"
+      DATABASE_HOST: db
+      DATABASE_NAME: covison
+      DATABASE_USER: covison
+      DATABASE_PASSWORD: ${POSTGRES_PASSWORD}
+    command: ["python", "manage.py", "sync_agent"]
+    volumes:
+      - files:/data
+    depends_on:
+      web: {condition: service_healthy}
+    networks: [local, edge]

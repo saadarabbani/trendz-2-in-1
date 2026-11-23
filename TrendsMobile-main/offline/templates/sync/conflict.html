@@ -1,0 +1,16 @@
+{% extends 'base.html' %}{% block content %}
+<h1>{{ title }} · {{ item.node.branch.name }}</h1>
+<div class="notice{% if item.status == 'Open' %} error{% endif %}"><p><strong>{{ item.status }}.</strong> {% for r in item.reasons %}{{ r }} {% endfor %}</p>
+<p>Received {{ item.created|date:"d M Y H:i" }} from {{ item.node.name }}.</p></div>
+<div class="panel table-scroll"><table><thead><tr><th>Record</th><th>Reference</th><th>Date</th><th>Status</th><th>Total</th></tr></thead><tbody>
+{% for r in rows %}<tr><td>{{ r.what }}{% if r.deleted %} (deleted){% endif %}</td><td>{{ r.label }}</td><td>{{ r.date }}</td><td>{{ r.status }}</td><td>{{ r.total }}</td></tr>{% endfor %}
+</tbody></table>{% if hidden %}<p class="muted">Plus {{ hidden }} accounting, stock and log line{{ hidden|pluralize }} that belong to these records.</p>{% endif %}</div>
+{% if item.status == 'Open' %}
+<form method="post" class="actions">{% csrf_token %}
+ <button class="primary" name="keep" value="shop">Apply the shop’s version</button>
+ <button name="keep" value="cloud">Keep the cloud’s version</button>
+</form>
+<p class="muted">Apply the shop’s version when the sale or purchase really happened (for example, cash was taken). Keeping the cloud’s version undoes this work on the laptop at its next sync.</p>
+{% endif %}
+<p><a href="{% url 'sync_status' %}">All shop laptops</a></p>
+{% endblock %}

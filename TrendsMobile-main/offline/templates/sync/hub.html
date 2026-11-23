@@ -1,0 +1,14 @@
+{% extends 'base.html' %}{% block content %}
+<h1>{{ title }}</h1>
+<p class="muted">Each shop laptop keeps working without internet and sends its work here when it reconnects. A laptop silent for a few minutes is shown as offline, and its stock is not offered on the website until it is back.</p>
+<div class="panel table-scroll"><table>
+<thead><tr><th>Laptop</th><th>Shop</th><th>Status</th><th>Last contact</th><th>Waiting on the laptop</th><th>Open conflicts</th></tr></thead>
+<tbody>{% for row in nodes %}<tr><td>{{ row.node.name }} ({{ row.node.node_no }})</td><td>{{ row.node.branch.name }}</td>
+<td>{% if not row.node.enabled %}Disabled{% elif row.offline %}<span class="error">Offline</span>{% else %}Online{% endif %}</td>
+<td>{% if row.node.last_seen %}{{ row.node.last_seen|timesince }} ago{% else %}never{% endif %}</td><td>{{ row.node.pending }}</td><td>{{ row.open }}</td></tr>
+{% empty %}<tr><td colspan="6">No shop laptops are registered. Register one with <code>python manage.py sync_register_node --branch SHOPCODE</code>.</td></tr>{% endfor %}</tbody></table></div>
+<h2>Conflicts to review</h2>
+{% if conflicts %}<div class="panel table-scroll"><table><thead><tr><th>Received</th><th>Shop</th><th>Why it was held</th><th></th></tr></thead><tbody>
+{% for c in conflicts %}<tr><td>{{ c.created|date:"d M Y H:i" }}</td><td>{{ c.node.branch.name }}</td><td>{{ c.reasons|join:" " }}</td><td><a href="{% url 'sync_conflict' c.pk %}">Review</a></td></tr>{% endfor %}
+</tbody></table></div>{% else %}<p>None. Everything the laptops sent has been applied.</p>{% endif %}
+{% endblock %}

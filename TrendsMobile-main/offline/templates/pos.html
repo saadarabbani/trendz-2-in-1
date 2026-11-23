@@ -1,0 +1,60 @@
+{% extends 'base.html' %}{% load static %}{% block content %}
+<div class="page-head"><div><h1>New Sale</h1><p>{% if all_shops %}Selling from <strong>any shop</strong>{% else %}{{ branch.name }}{% endif %} · all prices in PKR</p></div>
+  <div class="actions" style="margin:0">{% if shops|length > 1 %}<form method="get" class="search-bar" style="margin:0"><select name="branch" aria-label="Shop">{% if user.is_superuser %}<option value="" {% if all_shops %}selected{% endif %}>All shops</option>{% endif %}{% for place in shops %}<option value="{{ place.pk }}" {% if not all_shops and place.pk == branch.pk %}selected{% endif %}>{{ place.name }}</option>{% endfor %}</select><button>Switch shop</button></form>{% endif %}
+  <span class="pos-status" data-server-status role="status" aria-live="polite">Checking connection…</span><button type="button" data-check-server hidden>Check connection</button></div></div>
+{% if stale_shift %}<p class="notice">You have an old till shift still open. <a href="{% url 'new' 'POS Closing Entry' %}?shift={{ shift.pk }}">Close it</a> before selling today.</p>{% endif %}
+<div id="pos" data-endpoint="{% url 'pos_checkout' %}" data-branch="{% if not all_shops %}{{ branch.pk }}{% endif %}" data-all-shops="{{ all_shops|yesno:"true,false" }}" data-request-key="{{ request_key }}" data-shop="{{ branch.name }}" data-add-device="{{ add_device }}">
+<div class="pos-terminal">
+  <section class="pos-catalog panel" aria-label="Phones and products">
+    <div class="pos-filters">
+      <input type="search" id="pos-search" placeholder="Scan an IMEI or type a model, brand or storage…" aria-label="Find an item" autocomplete="off" autofocus>
+      <div class="pos-filter-row">
+        {% if all_shops %}<select id="pos-shop" aria-label="Shop"><option value="">All shops</option></select>{% endif %}<select id="pos-brand" aria-label="Brand"><option value="">All brands</option></select>
+        <select id="pos-model" aria-label="Model"><option value="">All models</option></select>
+        <select id="pos-storage" aria-label="Storage"><option value="">Any storage</option></select>
+        <select id="pos-condition" aria-label="Condition"><option value="">Any condition</option><option>Excellent</option><option>Very Good</option><option>Good</option><option>Fair</option><option>For Parts</option></select>
+        <input id="pos-max" type="number" min="0" step="1000" placeholder="Max price" aria-label="Maximum price">
+      </div>
+      <p class="muted" id="pos-count" aria-live="polite"></p>{% if not all_shops and not user.is_superuser %}<p class="muted" style="margin:0"><a href="{% url 'stock_everywhere' %}">Not in this shop? See which shop has it →</a></p>{% endif %}
+    </div>
+    <div id="pos-products" class="pos-products pos-cards"></div>
+  </section>
+
+  <aside class="pos-order panel" aria-label="Current order">
+    <h2 style="margin-top:0">Current order</h2>
+    <form id="pos-cart">{% csrf_token %}
+      <div class="pos-customer">
+        <label for="pos-customer-name">Customer<input id="pos-customer-name" name="customer_name" type="text" maxlength="180" required autocomplete="off" list="pos-customer-suggestions" placeholder="Type a name or pick a customer" value="{{ prefill }}"></label>
+        <label for="pos-customer-phone">Phone<input id="pos-customer-phone" name="customer_phone" type="tel" maxlength="40" autocomplete="off" placeholder="0300 1234567"></label>
+      </div>
+      <datalist id="pos-customer-suggestions"></datalist>
+      {% if sellers %}<label for="pos-seller">Sold by<select id="pos-seller" name="seller" required><option value="">Choose who is selling…</option>{% for p in sellers %}<option value="{{ p.pk }}">{{ p.name }}</option>{% endfor %}<option value="{{ me.pk }}">{{ me.name }} (shop counter)</option></select></label>{% else %}<input type="hidden" name="seller" value="{{ me.pk }}">{% endif %}<input type="hidden" name="handler" value="{{ me.pk }}">
+      {% if credit_doc %}<p class="notice pos-credit" id="pos-credit" data-credit-doc="{{ credit_doc.pk }}" data-credit="{{ credit_amount }}">Exchange for <strong>{{ credit_doc.customer.name }}</strong>: return credit of <strong>PKR {{ credit_amount }}</strong> ({{ credit_doc.code }}) will be used automatically on this sale.</p>{% endif %}
+      <p class="muted" id="pos-from" hidden></p><div id="cart-items" class="pos-cart"></div>
+      <p class="muted pos-empty" id="pos-empty">Tap a phone on the left, or scan its IMEI, to add it.</p>
+      <input type="hidden" name="tax_rule" value=""><input type="hidden" name="credit_due" value=""><input type="hidden" name="credit_instalments" value="0"><input type="hidden" name="override_approver" value=""><input type="hidden" name="override_pin" value="">
+      <label class="pos-note">Note for this order (optional)<textarea name="note" rows="2" maxlength="500" placeholder="Anything to remember: delivery, accessories included, agreement…"></textarea></label>
+      <div class="pos-discount" data-pos-discount>
+        <label>Discount<span class="pos-discount-row"><select name="discount_type" aria-label="Discount type"><option value="amount">PKR</option><option value="percent">%</option></select><input name="discount_value" type="number" min="0" step="0.01" value="0" inputmode="decimal" aria-label="Discount"></span></label>
+        <label>Or set the final total<input id="pos-final" type="number" min="0" step="0.01" inputmode="decimal" placeholder="Total agreed with the customer" aria-label="Final total"></label>
+      </div>
+      <div class="pos-totals">
+        <p id="cart-breakdown" aria-live="polite" class="muted"></p>
+        <div class="pos-total-row"><span>Total payable</span><strong id="cart-total">PKR 0.00</strong></div>
+        <p class="muted words-line" id="cart-words" aria-live="polite"></p>
+        <div class="pos-total-row"><span>Received</span><strong id="pos-received">PKR 0.00</strong></div>
+        <div class="pos-total-row remaining"><span>Remaining balance</span><strong id="pos-remaining">PKR 0.00</strong></div>
+      </div>
+      {% include 'payment_rows.html' %}
+      <p id="pos-error" class="error" role="alert"></p>
+      <button class="primary pos-complete" type="submit">Complete sale</button>
+    </form>
+    <div id="pos-done" class="pos-done" hidden>
+      <h2 style="margin-top:0">Sale complete</h2><p id="pos-done-text"></p>
+      <div class="actions"><a class="button primary" id="pos-print" href="#" target="_blank" rel="noopener">Print receipt</a><a class="button" id="pos-share" href="#" target="_blank" rel="noopener">Share on WhatsApp</a><a class="button" id="pos-view" href="#">View sale</a><a class="button" href="{% url 'pos' %}?branch={{ branch.pk }}">New sale</a></div>
+    </div>
+  </aside>
+</div></div>
+<dialog id="pos-preview" class="pos-preview" aria-label="Item details"><div class="dialog-body" id="pos-preview-body"></div><div class="dialog-actions"><button type="button" data-preview-close>Close</button><button type="button" class="primary" data-preview-add>Add to sale</button></div></dialog>
+{{ items|json_script:'pos-data' }}{{ tax_rules|json_script:'pos-tax-rules' }}{{ customers|json_script:'pos-customers' }}
+{% endblock %}{% block scripts %}<script src="{% static 'connection.js' %}" defer></script><script src="{% static 'pricing.js' %}" defer></script><script src="{% static 'pos.js' %}" defer></script>{% endblock %}

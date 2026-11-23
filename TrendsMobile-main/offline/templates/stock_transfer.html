@@ -1,0 +1,24 @@
+{% extends 'base.html' %}{% block content %}
+<div class="page-head"><div><h1>Stock Transfers</h1><p>Move phones between shops. Only you, the owner, can create, dispatch, receive or cancel a transfer. A phone is never available in two shops at once.</p></div></div>
+<div class="statement-cards">
+  <div class="panel"><h2>Pending</h2><strong>{{ counts.Pending }}</strong><small>Reserved, not yet sent</small></div>
+  <div class="panel"><h2>In transit</h2><strong>{{ counts.Dispatched }}</strong><small>{{ in_transit }} phone{{ in_transit|pluralize }} on the way</small></div>
+  <div class="panel"><h2>Discrepancies</h2><strong>{{ counts.Discrepancy }}</strong><small>Phones that did not arrive</small></div>
+</div>
+<nav class="easy-steps" aria-label="Filter transfers"><a href="{% url 'stock_transfer' %}" {% if not state %}aria-current="page"{% endif %}>All</a><a href="?state=Open" {% if state == 'Open' %}aria-current="page"{% endif %}>Pending</a>{% for name in states %}<a href="?state={{ name }}" {% if state == name %}aria-current="page"{% endif %}>{{ name }}</a>{% endfor %}</nav>
+<section class="panel table-scroll"><table><thead><tr><th>Date</th><th>Reference</th><th>From</th><th>To</th><th class="num">Phones</th><th>Status</th><th></th></tr></thead><tbody>
+{% for r in rows %}<tr><td>{{ r.doc.posting_date|date:"j M Y" }}</td><td><a href="{% url 'transfer_detail' r.doc.pk %}">{{ r.doc.code }}</a></td><td>{{ r.t.source_shop }}</td><td>{{ r.t.target_shop }}</td><td class="num">{{ r.count }}</td><td><span class="badge {% if r.status == 'Received' %}ok{% elif r.status == 'Cancelled' %}{% elif r.status == 'Discrepancy' %}bad{% else %}warn{% endif %}">{{ r.status }}</span></td><td><a href="{% url 'transfer_detail' r.doc.pk %}">Open</a> · <a href="{% url 'transfer_slip' r.doc.pk %}">Slip</a></td></tr>
+{% empty %}<tr><td colspan="7" class="empty-state">No transfers {% if state %}with this status{% else %}yet{% endif %}.</td></tr>{% endfor %}</tbody></table></section>
+
+<form method="get" class="search-bar"><label>Sending shop<select name="branch" onchange="this.form.submit()">{% for place in shops %}<option value="{{ place.pk }}" {% if place.pk == branch.pk %}selected{% endif %}>{{ place.name }}</option>{% endfor %}</select></label><label>Find a phone<input type="search" name="q" value="{{ q }}" placeholder="Model, IMEI or stock reference"></label><button>Search</button></form>
+<form method="post" class="panel">{% csrf_token %}<input type="hidden" name="request_key" value="{{ request_key }}"><input type="hidden" name="branch" value="{{ branch.pk }}">
+<h2 style="margin-top:0">New transfer from {{ branch.name }}</h2>
+<div class="form-grid"><div class="field"><label for="target">Send to</label><select id="target" name="target" required><option value="">Choose a shop</option>{% for t in targets %}<option value="{{ t.pk }}">{{ t.name }}</option>{% endfor %}</select></div>
+<div class="field"><label for="imeis">Scan or type IMEIs (optional)</label><textarea id="imeis" name="imeis" rows="2" placeholder="One IMEI per line"></textarea></div>
+<div class="field"><label for="notes">Note (optional)</label><input id="notes" name="notes" maxlength="240"></div></div>
+<p class="muted">Identical phones are one row. Type how many to send; the oldest stock goes first. To send one particular phone, scan or type its IMEI above.</p>
+<div class="table-scroll"><table><thead><tr><th>Phone</th><th>PTA</th><th>Type</th>{% if show_costs %}<th class="num">Cost</th>{% endif %}<th class="num">In stock</th><th class="num">Quantity to transfer</th></tr></thead><tbody>
+{% for g in groups %}<tr><td>{{ g.name }}</td><td>{{ g.pta }}</td><td>{{ g.kind }}</td>{% if show_costs %}<td class="num">{% if g.low == g.high %}{{ g.low|floatformat:"0g" }}{% else %}{{ g.low|floatformat:"0g" }} – {{ g.high|floatformat:"0g" }}{% endif %}</td>{% endif %}<td class="num"><strong>{{ g.count }}</strong></td><td class="num"><input type="hidden" name="group" value="{{ g.key }}"><input type="number" name="qty" min="0" max="{{ g.count }}" step="1" value="{% if want and want in g.name %}1{% endif %}" inputmode="numeric" aria-label="Quantity of {{ g.name }} to transfer" style="width:90px"></td></tr>
+{% empty %}<tr><td colspan="6" class="empty-state">No phones available in this shop{% if q %} matching your search{% endif %}.</td></tr>{% endfor %}</tbody></table></div>
+<div class="form-actions"><button class="primary" type="submit" name="mode" value="dispatch" data-confirm="Dispatch now? The ticked phones leave this shop's stock and are in transit until you confirm they arrived.">Create and dispatch</button><button type="submit" name="mode" value="pending">Save as pending</button></div></form>
+{% endblock %}

@@ -1,0 +1,603 @@
+import uuid
+from decimal import Decimal
+from django.conf import settings
+from django.core.exceptions import ValidationError
+from django.db import models
+from django.db.models import Q
+from django.utils import timezone
+
+class Record(models.Model):
+    id=models.UUIDField(primary_key=True,default=uuid.uuid4,editable=False)
+    code=models.CharField(max_length=180,unique=True)
+    source=models.JSONField(default=dict,blank=True)
+    demo_batch=models.CharField(max_length=300,blank=True)
+    created=models.DateTimeField(default=timezone.now,editable=False)
+    modified=models.DateTimeField(auto_now=True)
+    class Meta:abstract=True
+    def __str__(self):return self.code
+
+class Branch(Record):
+    name=models.CharField(max_length=180)
+    company=models.CharField(max_length=180)
+    enabled=models.BooleanField(default=True)
+    is_online=models.BooleanField(default=False,help_text='The Online Store: its own books (money, customers, sales). It holds no stock of its own; it sells the stock of the shops and owes them its cost.')
+    lock_through=models.DateField(null=True,blank=True,editable=False,help_text='Nothing can be posted, changed or cancelled on or before this date.')
+    def __str__(self):return self.name
+    def clean(self):
+        if not self._state.adding and not self.enabled and Document.objects.filter(branch=self,kind='POS Opening Entry',state='Open',status='Submitted').exists():raise ValidationError('Close this shop’s POS shifts before disabling the shop.')
+
+class Warehouse(Record):
+    branch=models.ForeignKey(Branch,on_delete=models.PROTECT)
+    name=models.CharField(max_length=180)
+    enabled=models.BooleanField(default=True)
+    def __str__(self):return self.name
+    def clean(self):
+        if self._state.adding:return
+        previous=Warehouse.objects.get(pk=self.pk)
+        linked=StockMovement.objects.filter(warehouse=self).exists() or Device.objects.filter(warehouse=self).exists() or Staff.objects.filter(default_warehouse=self).exists()
+        if previous.branch_id!=self.branch_id and linked:raise ValidationError('A warehouse with stock history, devices or staff defaults cannot move to another shop.')
+        if not self.enabled:
+            from django.db.models import Sum
+            stock=StockMovement.objects.filter(warehouse=self).values('product_id').annotate(q=Sum('quantity')).filter(q__gt=0).exists()
+            if stock or Device.objects.filter(warehouse=self,status='Available').exists() or Staff.objects.filter(default_warehouse=self,enabled=True).exists():raise ValidationError('Move remaining stock and reassign staff defaults before disabling this warehouse.')
+
+class Till(Record):
+    branch=models.ForeignKey(Branch,on_delete=models.PROTECT)
+    name=models.CharField(max_length=180)
+    enabled=models.BooleanField(default=True)
+    def __str__(self):return f'{self.name} · {self.branch.name}'
+    def clean(self):
+        if not self._state.adding:
+            previous=Till.objects.get(pk=self.pk)
+            if previous.branch_id!=self.branch_id and Document.objects.filter(till=self).exists():raise ValidationError('A till with transaction history cannot move to another shop.')
+            if not self.enabled and Document.objects.filter(till=self,kind='POS Opening Entry',status='Submitted',state='Open').exists():raise ValidationError('Close this till shift before disabling the till.')
+
+class Role(models.Model):
+    """A named set of permissions (see permissions.CATALOG). The old Staff yes/no flags are kept in step with the role
+    on save, so every existing check keeps working while new checks read the permission list directly."""
+    code=models.SlugField(max_length=40,unique=True)
+    name=models.CharField(max_length=80)
+    description=models.CharField(max_length=240,blank=True)
+    permissions=models.JSONField(default=list,blank=True)
+    discount_max_pct=models.DecimalField(max_digits=5,decimal_places=2,default=0,help_text='Largest invoice discount (%) this role may give without a manager override.')
+    refund_max=models.DecimalField(max_digits=18,decimal_places=2,default=0,help_text='Largest refund (PKR) without a manager override. 0 = none.')
+    system=models.BooleanField(default=False,editable=False)
+    enabled=models.BooleanField(default=True)
+    class Meta:ordering=['name']
+    def __str__(self):return self.name
+
+class Staff(Record):
+    name=models.CharField(max_length=180)
+    branch=models.ForeignKey(Branch,on_delete=models.PROTECT)
+    default_warehouse=models.ForeignKey(Warehouse,on_delete=models.PROTECT,null=True,blank=True)
+    user=models.OneToOneField(settings.AUTH_USER_MODEL,on_delete=models.SET_NULL,null=True,blank=True)
+    designation=models.CharField(max_length=100,blank=True)
+    crew=models.BooleanField(default=False)      # a person without a login who serves customers and buys stock; every sale and purchase in the shop is credited to someone
+    commission_rate=models.DecimalField(max_digits=5,decimal_places=2,default=0)      # % of the net sales this person makes (paid by the owner, reported per person)
+    enabled=models.BooleanField(default=True)
+    manager=models.BooleanField(default=False)
+    can_buy=models.BooleanField(default=False)
+    can_sell=models.BooleanField(default=False)
+    can_handle_payments=models.BooleanField(default=False)
+    role=models.ForeignKey(Role,on_delete=models.PROTECT,null=True,blank=True,related_name='staff')
+    approval_pin=models.CharField(max_length=128,blank=True,editable=False)
+    def __str__(self):return self.name
+    def save(self,*args,**kwargs):
+        if self.user_id:       # exactly two kinds of user: the owner, and a shop login that runs its whole shop
+            self.manager=self.can_buy=self.can_sell=self.can_handle_payments=True
+        return super().save(*args,**kwargs)
+    def clean(self):
+        if self.default_warehouse_id and (self.default_warehouse.branch_id!=self.branch_id or not self.default_warehouse.enabled):raise ValidationError('Select an active default warehouse in this staff member’s shop.')
+        if not self._state.adding:
+            previous=Staff.objects.get(pk=self.pk)
+            changed=previous.branch_id!=self.branch_id or previous.user_id!=self.user_id or (previous.enabled and not self.enabled) or (previous.can_handle_payments and not self.can_handle_payments)
+            if changed and Document.objects.filter(handler=self,kind='POS Opening Entry',state='Open',status='Submitted').exists():raise ValidationError('Close this staff member’s POS shift before changing their shop, login or payment access.')
+
+class Party(Record):
+    credit_limit=models.DecimalField(max_digits=18,decimal_places=2,default=0,help_text='Largest unpaid balance this customer may carry. 0 means no limit.')
+    kind=models.CharField(max_length=10,choices=[('Customer','Customer'),('Supplier','Supplier')])
+    name=models.CharField(max_length=180)
+    city=models.CharField(max_length=100,blank=True)
+    phone=models.CharField(max_length=100,blank=True)
+    email=models.EmailField(blank=True)
+    address=models.TextField(blank=True)
+    enabled=models.BooleanField(default=True)
+    branch=models.ForeignKey('Branch',on_delete=models.PROTECT,null=True,blank=True,related_name='parties',help_text='The shop this customer or supplier belongs to. Empty only for old records that were never used.')
+    class Meta:constraints=[models.UniqueConstraint(fields=['branch','kind','name'],name='party_branch_kind_name'),
+                           models.UniqueConstraint(fields=['kind','name'],condition=Q(branch__isnull=True),name='party_unassigned_kind_name')]
+    def __str__(self):return self.name
+    def clean(self):
+        if self.credit_limit<0:raise ValidationError('The credit limit cannot be negative.')
+        if self.phone.strip():
+            digits=''.join(c for c in self.phone if c.isdigit())
+            if not 7<=len(digits)<=13 or any(c not in '0123456789+-() ./' for c in self.phone.strip()):
+                raise ValidationError('Enter a valid phone number, for example 0300 1234567 or +92 300 1234567.')
+
+class Brand(models.Model):
+    name=models.CharField(max_length=80,unique=True)
+    enabled=models.BooleanField(default=True)
+    class Meta:ordering=['name']
+    def __str__(self):return self.name
+
+class PhoneModel(Record):
+    name=models.CharField(max_length=180)
+    brand=models.CharField(max_length=100)
+    description=models.TextField(blank=True)
+    def __str__(self):return self.name
+
+class Product(Record):
+    name=models.CharField(max_length=180)
+    group=models.CharField(max_length=100,default='Used Phones')
+    model=models.ForeignKey(PhoneModel,on_delete=models.PROTECT,null=True,blank=True)
+    brand=models.CharField(max_length=100,blank=True)
+    storage=models.CharField(max_length=40,blank=True)
+    ram=models.CharField(max_length=40,blank=True)
+    colour=models.CharField(max_length=80,blank=True)
+    serialized=models.BooleanField(default=False)
+    stock_item=models.BooleanField(default=True)
+    reorder_level=models.DecimalField(max_digits=12,decimal_places=3,default=0,help_text='Warn when accessory stock in a shop falls to this quantity or below. 0 = no alert.')
+    selling_price=models.DecimalField(max_digits=18,decimal_places=2,default=0)
+    barcodes=models.JSONField(default=list,blank=True)
+    enabled=models.BooleanField(default=True)
+    # Online store: the website shows a product only when it is published here; the price is optional (blank = the shop price).
+    online_visible=models.BooleanField(default=False)
+    online_price=models.DecimalField(max_digits=18,decimal_places=2,null=True,blank=True,help_text='Price on the website. Leave empty to use the shop price.')
+    description=models.TextField(blank=True)
+    slug=models.SlugField(max_length=200,unique=True,null=True,blank=True)
+    discount_percent=models.DecimalField(max_digits=5,decimal_places=2,null=True,blank=True,help_text='Percentage taken off the online price.')
+    compare_price=models.DecimalField(max_digits=18,decimal_places=2,null=True,blank=True,help_text='The old price shown crossed out next to the online price. Empty = the price before the percentage off.')
+    online_hidden=models.BooleanField(default=False,help_text='Keep this product off the website even if it has photos.')
+    specs=models.JSONField(default=dict,blank=True,help_text='Specifications shown on the website: {"display_size": "6.9 inch", ...}. Shared by every variant on the page.')
+    web_title=models.CharField(max_length=200,blank=True,help_text='The page this product is shown on in the website. Products with the same page title are variants of one page. Empty = the model name (phones) or the product name.')
+    family_slug=models.SlugField(max_length=200,blank=True,db_index=True)
+    def clean(self):
+        if not self.serialized and self.stock_item and self.selling_price<=0:raise ValidationError('Enter the selling price: every item needs one.')
+        if self.online_price is not None and self.online_price<=0:raise ValidationError('The online price must be more than zero, or empty to use the shop price.')
+        if self.serialized and (not self.stock_item or not self.model_id or not self.storage):raise ValidationError('Phone variants require a model, storage and stock tracking.')
+        if self.selling_price<0:raise ValidationError('Selling price cannot be negative.')
+        before=Product.objects.filter(pk=self.pk).values('serialized','stock_item').first()
+        if before and (before['serialized']!=self.serialized or before['stock_item']!=self.stock_item) and (StockMovement.objects.filter(product_id=self.pk).exists() or Line.objects.filter(product_id=self.pk).exists()):
+            raise ValidationError('Stock tracking cannot be changed once this product has been bought or sold. Create a new product instead.')
+    def __str__(self):return self.name if self.name==self.code else f'{self.name} ({self.code})'
+
+class ProductImage(models.Model):
+    """A photo of a product for the online store. Position 0 is the cover. Files live in a public storage bucket; `url` is what the website shows."""
+    id=models.UUIDField(primary_key=True,default=uuid.uuid4,editable=False)
+    product=models.ForeignKey(Product,on_delete=models.CASCADE,related_name='images')
+    path=models.CharField(max_length=300)
+    url=models.CharField(max_length=600)
+    alt=models.CharField(max_length=200,blank=True)
+    variant_only=models.BooleanField(default=False,help_text='True: the photo belongs to this colour/storage only. False: it is shared by every variant on the page.')
+    position=models.PositiveIntegerField(default=0)
+    size=models.PositiveIntegerField(default=0)
+    created=models.DateTimeField(default=timezone.now,editable=False)
+    class Meta:ordering=['position','created']
+
+class Device(Record):
+    branch=models.ForeignKey(Branch,on_delete=models.PROTECT)
+    product=models.ForeignKey(Product,on_delete=models.PROTECT)
+    warehouse=models.ForeignKey(Warehouse,on_delete=models.PROTECT,null=True,blank=True)
+    status=models.CharField(max_length=30,default='Available')
+    device_type=models.CharField(max_length=30,default='Used')
+    pta_status=models.CharField(max_length=20,default='Not recorded',db_default='Not recorded',choices=[('PTA','PTA'),('Non-PTA','Non-PTA'),('JV','JV'),('Not recorded','Not recorded')])
+    condition=models.CharField(max_length=40,default='Not Inspected')
+    grade=models.PositiveSmallIntegerField(null=True,blank=True,help_text='Condition grade out of 10 (10 = like new).')
+    inspection_status=models.CharField(max_length=30,default='Pending')
+    inspection_date=models.DateField(null=True,blank=True)
+    battery_checked=models.BooleanField(default=False)
+    battery=models.PositiveSmallIntegerField(default=0)
+    purchase_cost=models.DecimalField(max_digits=18,decimal_places=2,default=0)
+    asking_price=models.DecimalField(max_digits=18,decimal_places=2,default=0)
+    online_price=models.DecimalField(max_digits=18,decimal_places=2,null=True,blank=True,help_text='Price on the website for this phone. Leave empty to use the product online price, then the shop price.')
+    minimum_price=models.DecimalField(max_digits=18,decimal_places=2,default=0)
+    wholesale_price=models.DecimalField(max_digits=18,decimal_places=2,default=0)
+    warranty_days=models.PositiveIntegerField(default=0)
+    warranty_terms=models.TextField(blank=True)
+    faults=models.TextField(blank=True)
+    details=models.JSONField(default=dict,blank=True)
+    received_on=models.DateField(default=timezone.localdate)
+    sold_on=models.DateField(null=True,blank=True)
+    sold_price=models.DecimalField(max_digits=18,decimal_places=2,default=0)
+    customer=models.ForeignKey(Party,on_delete=models.PROTECT,null=True,blank=True)
+    sale=models.ForeignKey('Document',on_delete=models.PROTECT,null=True,blank=True,related_name='sold_devices')
+    def clean(self):
+        if self.battery>100:raise ValidationError('Battery health must be between 0 and 100.')
+        if self.grade is not None and not 1<=self.grade<=10:raise ValidationError('Condition grade must be between 1 and 10.')
+        if min(self.asking_price,self.minimum_price,self.wholesale_price,self.purchase_cost)<0:raise ValidationError('Prices cannot be negative.')
+        if self.asking_price and self.asking_price<self.minimum_price:raise ValidationError('Asking price cannot be below minimum price.')
+        if self.inspection_status=='Passed' and not self.inspection_date:self.inspection_date=timezone.localdate()
+    def __str__(self):return f'{self.code} · {self.product.name}'
+    def save(self,*args,**kwargs):
+        if not self.branch_id:
+            if self.warehouse_id:self.branch=self.warehouse.branch
+            elif self.sale_id:self.branch=self.sale.branch
+            else:raise ValidationError('A device must belong to a shop.')
+        if self.warehouse_id and self.warehouse.branch_id!=self.branch_id:raise ValidationError('Phone warehouse belongs to another shop.')
+        return super().save(*args,**kwargs)
+
+class IMEI(models.Model):
+    number=models.CharField(primary_key=True,max_length=15)
+    device=models.ForeignKey(Device,on_delete=models.CASCADE,related_name='imeis')
+    slot=models.PositiveSmallIntegerField()
+    pta_status=models.CharField(max_length=30,default='Not Checked')
+    verified_on=models.DateField(null=True,blank=True)
+    evidence=models.FileField(upload_to='pta/%Y/%m/',blank=True)
+    verified_by=models.CharField(max_length=180,blank=True)
+    class Meta:constraints=[models.UniqueConstraint(fields=['device','slot'],name='imei_device_slot'),
+        models.CheckConstraint(condition=Q(slot__in=[1,2]),name='imei_slot_valid')]
+    def clean(self):
+        from .services import valid_imei
+        if not valid_imei(self.number):raise ValidationError('Enter a valid 15-digit IMEI including its check digit.')
+        if self.pta_status!='Not Checked' and not self.verified_on:raise ValidationError('Record the PTA verification date.')
+
+KINDS=['Mobile Intake','Purchase Order','Purchase Receipt','Purchase Invoice','Sales Invoice','POS Invoice',
+       'Payment Entry','Journal Entry','Stock Entry','Mobile Exchange','Warranty Claim','Mobile Daily Closing','POS Opening Entry','POS Closing Entry','Stock Adjustment','Voucher','Purchase Return']
+class Document(Record):
+    kind=models.CharField(max_length=40,choices=[(k,k) for k in KINDS],db_index=True)
+    branch=models.ForeignKey(Branch,on_delete=models.PROTECT)
+    status=models.CharField(max_length=12,choices=[('Draft','Draft'),('Submitted','Submitted'),('Cancelled','Cancelled')],default='Draft')
+    state=models.CharField(max_length=40,blank=True)
+    posting_date=models.DateField(default=timezone.localdate,db_index=True)
+    due_date=models.DateField(null=True,blank=True,help_text='When the unpaid balance is promised (last instalment if a plan is set).')
+    customer=models.ForeignKey(Party,on_delete=models.PROTECT,null=True,blank=True,related_name='sales')
+    supplier=models.ForeignKey(Party,on_delete=models.PROTECT,null=True,blank=True,related_name='purchases')
+    warehouse=models.ForeignKey(Warehouse,on_delete=models.PROTECT,null=True,blank=True)
+    reference=models.ForeignKey('self',on_delete=models.PROTECT,null=True,blank=True,related_name='linked')
+    buyer=models.ForeignKey(Staff,on_delete=models.PROTECT,null=True,blank=True,related_name='bought')
+    seller=models.ForeignKey(Staff,on_delete=models.PROTECT,null=True,blank=True,related_name='sold')
+    handler=models.ForeignKey(Staff,on_delete=models.PROTECT,null=True,blank=True,related_name='handled')
+    till=models.ForeignKey(Till,on_delete=models.PROTECT,null=True,blank=True)
+    pos_shift=models.ForeignKey('self',on_delete=models.PROTECT,null=True,blank=True,related_name='shift_transactions')
+    staff_names=models.JSONField(default=dict,blank=True)
+    total=models.DecimalField(max_digits=18,decimal_places=2,default=0)
+    outstanding=models.DecimalField(max_digits=18,decimal_places=2,default=0)
+    currency=models.CharField(max_length=3,default='PKR',editable=False)
+    is_return=models.BooleanField(default=False)
+    notes=models.TextField(blank=True)
+    data=models.JSONField(default=dict,blank=True)
+    posted_by=models.ForeignKey(settings.AUTH_USER_MODEL,on_delete=models.PROTECT,null=True,blank=True)
+    channel=models.CharField(max_length=10,default='Shop',db_default='Shop',db_index=True,choices=[('Shop','Shop'),('Online','Online')])
+    online_order=models.ForeignKey('OnlineOrder',on_delete=models.PROTECT,null=True,blank=True,related_name='documents')
+    class Meta:
+        ordering=['-posting_date','-created']
+        constraints=[models.UniqueConstraint(fields=['branch','posting_date'],condition=Q(kind='Mobile Daily Closing',status='Submitted'),name='one_daily_closing'),
+            models.UniqueConstraint(fields=['branch','posted_by'],condition=Q(kind='POS Opening Entry',state='Open',status='Submitted'),name='one_open_shift'),
+            models.UniqueConstraint(fields=['till'],condition=Q(kind='POS Opening Entry',state='Open',status='Submitted',till__isnull=False),name='one_open_till'),
+            models.UniqueConstraint(fields=['handler'],condition=Q(kind='POS Opening Entry',state='Open',status='Submitted',till__isnull=False),name='one_cashier_shift')]
+    def __str__(self):return self.code
+
+class Installment(models.Model):
+    """One scheduled payment of a credit sale. Whether it is paid is derived from the invoice's payments (oldest first)."""
+    document=models.ForeignKey('Document',on_delete=models.CASCADE,related_name='installments')
+    number=models.PositiveSmallIntegerField()
+    due_date=models.DateField()
+    amount=models.DecimalField(max_digits=18,decimal_places=2)
+    class Meta:
+        ordering=['number']
+        constraints=[models.UniqueConstraint(fields=['document','number'],name='installment_number_once'),models.CheckConstraint(condition=Q(amount__gt=0),name='installment_positive')]
+
+class Line(models.Model):
+    document=models.ForeignKey(Document,on_delete=models.CASCADE,related_name='lines')
+    product=models.ForeignKey(Product,on_delete=models.PROTECT)
+    device=models.ForeignKey(Device,on_delete=models.PROTECT,null=True,blank=True)
+    warehouse=models.ForeignKey(Warehouse,on_delete=models.PROTECT,null=True,blank=True)
+    quantity=models.DecimalField(max_digits=18,decimal_places=3,default=1)
+    rate=models.DecimalField(max_digits=18,decimal_places=2)
+    cost=models.DecimalField(max_digits=18,decimal_places=2,default=0)
+    snapshot=models.JSONField(default=dict,blank=True)
+
+    @property
+    def pta_label(self):
+        if self.snapshot.get('pta_status'):return self.snapshot['pta_status']
+        values=[entry.get('status') for entry in self.snapshot.get('pta',[])]
+        return 'Non-PTA' if any(value in ('Non-compliant','Blocked') for value in values) else 'PTA' if values and all(value=='Compliant' for value in values) else 'Not recorded'
+
+ROOT_TYPES=('Asset','Liability','Equity','Income','Expense')
+class Account(Record):
+    name=models.CharField(max_length=180)
+    account_type=models.CharField(max_length=50,blank=True)
+    root_type=models.CharField(max_length=10,blank=True,choices=[(r,r) for r in ROOT_TYPES])
+    parent=models.ForeignKey('self',null=True,blank=True,on_delete=models.PROTECT,related_name='children')
+    enabled=models.BooleanField(default=True)
+    is_group=models.BooleanField(default=False)
+    def __str__(self):return f'{self.name} ({self.code})'
+    def clean(self):
+        if self.parent_id:
+            if self.parent_id==self.pk:raise ValidationError('An account cannot be its own parent.')
+            if not self.parent.is_group:raise ValidationError('Choose a group account as the parent.')
+            ancestor=self.parent
+            while ancestor is not None:
+                if ancestor.pk==self.pk:raise ValidationError('That parent would create a loop in the chart.')
+                ancestor=ancestor.parent
+            if self.root_type and self.parent.root_type and self.root_type!=self.parent.root_type:raise ValidationError('An account must be in the same section (Asset, Liability, Equity, Income or Expense) as its parent.')
+            if not self.root_type:self.root_type=self.parent.root_type
+        if not self.is_group and self.pk and Account.objects.filter(parent_id=self.pk).exists():raise ValidationError('This account has sub-accounts, so it must stay a group.')
+        if self._state.adding:return
+        previous=Account.objects.get(pk=self.pk)
+        used=LedgerEntry.objects.filter(account=self).exists() or SalesTaxRule.objects.filter(account=self).exists() or any(str(self.pk) in list(s.accounts.values())+list(s.payment_methods.values()) for s in ShopSettings.objects.all())
+        if used and (self.code!=previous.code or self.account_type!=previous.account_type or not self.enabled or self.is_group):raise ValidationError('An account used by a shop or posted transactions must keep its code, type and active posting status.')
+
+class LedgerEntry(models.Model):
+    document=models.ForeignKey(Document,on_delete=models.PROTECT,related_name='ledger')
+    branch=models.ForeignKey(Branch,on_delete=models.PROTECT)
+    posting_date=models.DateField(db_index=True)
+    account=models.ForeignKey(Account,on_delete=models.PROTECT)
+    party=models.ForeignKey(Party,on_delete=models.PROTECT,null=True,blank=True)
+    reference=models.ForeignKey(Document,on_delete=models.PROTECT,null=True,blank=True,related_name='allocations')
+    debit=models.DecimalField(max_digits=18,decimal_places=2,default=0)
+    credit=models.DecimalField(max_digits=18,decimal_places=2,default=0)
+    class Meta:constraints=[models.CheckConstraint(condition=Q(debit__gte=0,credit__gte=0),name='ledger_nonnegative')]
+
+class StockMovement(models.Model):
+    document=models.ForeignKey(Document,on_delete=models.PROTECT,related_name='stock')
+    posting_date=models.DateField(db_index=True)
+    product=models.ForeignKey(Product,on_delete=models.PROTECT)
+    device=models.ForeignKey(Device,on_delete=models.PROTECT,null=True,blank=True)
+    warehouse=models.ForeignKey(Warehouse,on_delete=models.PROTECT)
+    quantity=models.DecimalField(max_digits=18,decimal_places=3)
+    value=models.DecimalField(max_digits=18,decimal_places=2)
+
+class ShopSettings(models.Model):
+    branch=models.OneToOneField(Branch,on_delete=models.CASCADE,primary_key=True)
+    shop_phone=models.CharField(max_length=180,blank=True)
+    shop_address=models.TextField(blank=True)
+    receipt_terms=models.TextField(blank=True)
+    urdu_receipt_note=models.TextField(blank=True)
+    ageing_days=models.PositiveIntegerField(default=30)
+    accounts=models.JSONField(default=dict)
+    payment_methods=models.JSONField(default=dict)
+
+class SalesTaxRule(Record):
+    branch=models.ForeignKey(Branch,on_delete=models.PROTECT)
+    name=models.CharField(max_length=180)
+    rate=models.DecimalField(max_digits=7,decimal_places=4)
+    account=models.ForeignKey(Account,on_delete=models.PROTECT)
+    reference=models.CharField(max_length=300)
+    enabled=models.BooleanField(default=True)
+    class Meta:
+        ordering=['name','code']
+        constraints=[models.CheckConstraint(condition=Q(rate__gte=0,rate__lte=100),name='sales_tax_rate_range')]
+    def __str__(self):return f'{self.name} · {self.rate}% · {self.branch.code}'
+    def clean(self):
+        if not isinstance(self.rate,Decimal) or not self.rate.is_finite() or self.rate<0 or self.rate>100:raise ValidationError('Tax rate must be between 0 and 100, with at most four decimal places.')
+        if not (self.reference or '').strip():raise ValidationError('Record the client’s rate/treatment reference.')
+        if self.account_id:
+            if not self.account.enabled or self.account.is_group or self.account.account_type not in ('Tax','Current Liability'):raise ValidationError('Use a separate active Tax or Current Liability account.')
+            if any(str(self.account_id) in list(config.accounts.values())+list(config.payment_methods.values()) for config in ShopSettings.objects.all()):raise ValidationError('Output tax cannot use an existing stock, income, party or payment account.')
+
+class Audit(models.Model):
+    created=models.DateTimeField(auto_now_add=True)
+    user=models.ForeignKey(settings.AUTH_USER_MODEL,on_delete=models.PROTECT,null=True)
+    action=models.CharField(max_length=80)
+    document=models.ForeignKey(Document,on_delete=models.PROTECT,null=True)
+    branch=models.ForeignKey(Branch,on_delete=models.PROTECT,null=True,blank=True)
+    ip=models.GenericIPAddressField(null=True,blank=True)
+    details=models.JSONField(default=dict)
+
+class RequestKey(models.Model):
+    key=models.UUIDField(primary_key=True)
+    actor=models.ForeignKey(settings.AUTH_USER_MODEL,on_delete=models.PROTECT)
+    fingerprint=models.CharField(max_length=64)
+    document=models.ForeignKey(Document,on_delete=models.PROTECT,null=True)
+
+class SourceRecord(models.Model):
+    doctype=models.CharField(max_length=100)
+    name=models.CharField(max_length=180)
+    payload=models.JSONField()
+    class Meta:constraints=[models.UniqueConstraint(fields=['doctype','name'],name='source_doctype_name')]
+
+class ImportRun(models.Model):
+    fingerprint=models.CharField(max_length=64,unique=True)
+    created=models.DateTimeField(auto_now_add=True)
+    summary=models.JSONField()
+
+class SupabaseIdentity(models.Model):
+    auth_id=models.UUIDField(unique=True)
+    user=models.OneToOneField(settings.AUTH_USER_MODEL,on_delete=models.CASCADE,related_name='supabase_identity')
+
+
+class FixedAsset(Record):
+    """A long-lived item (shelving, counter, computer). Cost is depreciated month by month into the expense account."""
+    branch=models.ForeignKey(Branch,on_delete=models.PROTECT)
+    name=models.CharField(max_length=180)
+    purchase_date=models.DateField()
+    cost=models.DecimalField(max_digits=18,decimal_places=2)
+    salvage=models.DecimalField(max_digits=18,decimal_places=2,default=0)
+    life_months=models.PositiveIntegerField()
+    method=models.CharField(max_length=20,choices=[('Straight line','Straight line'),('Reducing balance','Reducing balance')],default='Straight line')
+    rate=models.DecimalField(max_digits=5,decimal_places=2,default=0,help_text='Yearly rate for reducing balance, in percent.')
+    asset_account=models.ForeignKey(Account,on_delete=models.PROTECT,related_name='+')
+    accumulated_account=models.ForeignKey(Account,on_delete=models.PROTECT,related_name='+')
+    expense_account=models.ForeignKey(Account,on_delete=models.PROTECT,related_name='+')
+    depreciated_through=models.DateField(null=True,blank=True)
+    accumulated=models.DecimalField(max_digits=18,decimal_places=2,default=0)
+    status=models.CharField(max_length=10,choices=[('Active','Active'),('Disposed','Disposed')],default='Active')
+    disposed_on=models.DateField(null=True,blank=True)
+    disposal_amount=models.DecimalField(max_digits=18,decimal_places=2,default=0)
+    class Meta:
+        constraints=[models.CheckConstraint(condition=Q(cost__gt=0,salvage__gte=0,salvage__lte=models.F('cost'),life_months__gt=0),name='asset_sane_values')]
+    @property
+    def book_value(self):return self.cost-self.accumulated
+
+
+class Deferral(Record):
+    """A prepaid expense (paid now, used over months) or an accrual (used now, paid later, reversed when paid)."""
+    branch=models.ForeignKey(Branch,on_delete=models.PROTECT)
+    kind=models.CharField(max_length=10,choices=[('Prepaid','Prepaid'),('Accrual','Accrual')])
+    description=models.CharField(max_length=240)
+    amount=models.DecimalField(max_digits=18,decimal_places=2)
+    start_date=models.DateField()
+    months=models.PositiveIntegerField(default=1)
+    expense_account=models.ForeignKey(Account,on_delete=models.PROTECT,related_name='+')
+    balance_account=models.ForeignKey(Account,on_delete=models.PROTECT,related_name='+')
+    released=models.DecimalField(max_digits=18,decimal_places=2,default=0)
+    released_through=models.DateField(null=True,blank=True)
+    reverse_on=models.DateField(null=True,blank=True)
+    status=models.CharField(max_length=10,choices=[('Open','Open'),('Complete','Complete')],default='Open')
+    class Meta:
+        constraints=[models.CheckConstraint(condition=Q(amount__gt=0,months__gt=0),name='deferral_sane_values')]
+
+
+class Loan(Record):
+    """Money borrowed. The liability balance is the principal still owed; repayments split principal and interest."""
+    branch=models.ForeignKey(Branch,on_delete=models.PROTECT)
+    lender=models.CharField(max_length=180)
+    principal=models.DecimalField(max_digits=18,decimal_places=2)
+    annual_rate=models.DecimalField(max_digits=5,decimal_places=2,default=0)
+    start_date=models.DateField()
+    term_months=models.PositiveIntegerField(default=12)
+    liability_account=models.ForeignKey(Account,on_delete=models.PROTECT,related_name='+')
+    interest_account=models.ForeignKey(Account,on_delete=models.PROTECT,related_name='+')
+    principal_paid=models.DecimalField(max_digits=18,decimal_places=2,default=0)
+    interest_paid=models.DecimalField(max_digits=18,decimal_places=2,default=0)
+    class Meta:
+        constraints=[models.CheckConstraint(condition=Q(principal__gt=0,principal_paid__gte=0,principal_paid__lte=models.F('principal')),name='loan_sane_values')]
+    @property
+    def outstanding(self):return self.principal-self.principal_paid
+
+
+class StaffRate(models.Model):
+    """A commission rate and the day it starts. A sale earns the rate that was in force on its date, so raising someone's commission never changes what they
+    earned before. Staff.commission_rate always mirrors the newest row."""
+    id=models.UUIDField(primary_key=True,default=uuid.uuid4,editable=False)
+    staff=models.ForeignKey(Staff,on_delete=models.CASCADE,related_name='rates')
+    rate=models.DecimalField(max_digits=5,decimal_places=2)
+    effective_from=models.DateField()
+    class Meta:
+        ordering=['effective_from']
+        constraints=[models.UniqueConstraint(fields=['staff','effective_from'],name='staffrate_staff_day'),models.CheckConstraint(condition=Q(rate__gte=0,rate__lte=100),name='staffrate_range')]
+
+
+class OnlineStaff(models.Model):
+    """A login that runs the online store only: orders, online stock, products and photos, online refunds. It never sees shop money screens."""
+    user=models.OneToOneField(settings.AUTH_USER_MODEL,on_delete=models.CASCADE,related_name='online_staff')
+    name=models.CharField(max_length=180)
+    enabled=models.BooleanField(default=True)
+    def __str__(self):return self.name
+
+
+class OnlineOrder(Record):
+    """A customer order from the website (or typed in by the online team). Stock is reserved from whichever shops hold it; when the order is
+    dispatched one sales invoice is posted in each shop that supplied stock, so every shop's stock and books stay right."""
+    NEW,DISPATCHED,DELIVERED,CANCELLED,RETURNED='New','Dispatched','Delivered','Cancelled','Returned'      # New = confirmed and reserved; Returned = a failed delivery that came back to a shop
+    status=models.CharField(max_length=12,default='New',db_index=True,choices=[(s,s) for s in ('New','Dispatched','Delivered','Cancelled','Returned')])
+    source=models.CharField(max_length=12,default='Website',choices=[('Website','Website'),('Manual','Manual')])
+    external_ref=models.CharField(max_length=80,unique=True,null=True,blank=True)
+    customer_name=models.CharField(max_length=180)
+    customer_phone=models.CharField(max_length=40)
+    customer_email=models.CharField(max_length=180,blank=True)
+    address=models.TextField(blank=True)
+    city=models.CharField(max_length=100,blank=True)
+    payment_method=models.CharField(max_length=30,default='Cash on Delivery')
+    payment_status=models.CharField(max_length=10,default='Unpaid',choices=[('Unpaid','Unpaid'),('Paid','Paid')])
+    payment_reference=models.CharField(max_length=180,blank=True)
+    delivery_fee=models.DecimalField(max_digits=18,decimal_places=2,default=0)
+    subtotal=models.DecimalField(max_digits=18,decimal_places=2,default=0)
+    total=models.DecimalField(max_digits=18,decimal_places=2,default=0)
+    courier=models.CharField(max_length=100,blank=True)
+    tracking=models.CharField(max_length=100,blank=True)
+    notes=models.TextField(blank=True)
+    placed_on=models.DateField(default=timezone.localdate,db_index=True)
+    dispatched_on=models.DateField(null=True,blank=True)
+    delivered_on=models.DateField(null=True,blank=True)
+    cancel_reason=models.CharField(max_length=240,blank=True)
+    created_by=models.ForeignKey(settings.AUTH_USER_MODEL,on_delete=models.SET_NULL,null=True,blank=True)
+    alt_phone=models.CharField(max_length=40,blank=True)
+    postal_code=models.CharField(max_length=20,blank=True)
+    shipping_method=models.CharField(max_length=100,blank=True)
+    discount_amount=models.DecimalField(max_digits=18,decimal_places=2,default=0)
+    discount_code=models.CharField(max_length=60,blank=True)
+    extra=models.JSONField(default=dict,blank=True,help_text='Everything else the website sent with the order (billing address, delivery notes, source, …).')
+    exchange_credit=models.ForeignKey(Document,on_delete=models.PROTECT,null=True,blank=True,related_name='+',help_text='A return credit from an earlier online sale that pays for this replacement order.')
+    stage=models.CharField(max_length=24,blank=True,default='')      # Pending, Confirmed, Processing, Ready for Dispatch (New); Dispatched, In Transit; Return Requested. Empty on old orders
+    dispatch_notes=models.TextField(blank=True,default='')
+    return_note=models.CharField(max_length=240,blank=True,default='')
+    seen_at=models.DateTimeField(null=True,blank=True,db_index=True)      # empty until the online team opens the order: drives the new-order badge
+    failed_reason=models.CharField(max_length=240,blank=True,default='')
+    confirmed_at=models.DateTimeField(null=True,blank=True,db_index=True)      # empty = Unconfirmed: the online manager has not yet called the customer
+    confirmed_by=models.ForeignKey(settings.AUTH_USER_MODEL,on_delete=models.SET_NULL,null=True,blank=True,related_name='+')
+    returned_on=models.DateField(null=True,blank=True)
+    class Meta:ordering=['-created']
+
+
+class OnlineSettings(models.Model):
+    """The website's delivery pricing and whether cash on delivery is offered. One row, edited by the owner and the online manager."""
+    id=models.PositiveSmallIntegerField(primary_key=True,default=1)
+    delivery_fee=models.DecimalField(max_digits=12,decimal_places=2,default=250)
+    free_delivery_from=models.DecimalField(max_digits=12,decimal_places=2,null=True,blank=True,default=30000)      # empty = delivery is never free
+    cod_enabled=models.BooleanField(default=True)
+    modified=models.DateTimeField(auto_now=True)
+
+    @classmethod
+    def get(cls):
+        return cls.objects.get_or_create(pk=1)[0]
+
+
+class OnlineDeliveryRule(models.Model):
+    """A different delivery fee for one province (the default fee applies everywhere else)."""
+    id=models.UUIDField(primary_key=True,default=uuid.uuid4,editable=False)
+    province=models.CharField(max_length=60)
+    fee=models.DecimalField(max_digits=12,decimal_places=2)
+    class Meta:
+        constraints=[models.UniqueConstraint(fields=['province'],name='onlinedelivery_province')]
+        ordering=['province']
+
+
+class OnlinePaymentAccount(models.Model):
+    """An account customers can pay into (bank, Easypaisa, JazzCash…). The website shows it at checkout for that method."""
+    METHODS=('Bank Transfer','Easypaisa','JazzCash','Card')
+    id=models.UUIDField(primary_key=True,default=uuid.uuid4,editable=False)
+    method=models.CharField(max_length=30,choices=[(m,m) for m in ('Bank Transfer','Easypaisa','JazzCash','Card')])
+    title=models.CharField(max_length=120,help_text='Account title (the name on the account)')
+    bank_name=models.CharField(max_length=120,blank=True)
+    account_number=models.CharField(max_length=60,blank=True)
+    iban=models.CharField(max_length=40,blank=True)
+    instructions=models.CharField(max_length=300,blank=True)
+    enabled=models.BooleanField(default=True)
+    position=models.PositiveSmallIntegerField(default=0)
+    class Meta:ordering=['method','position','title']
+
+
+class OnlineOrderAck(models.Model):
+    """A shop has seen an order it has to pack (drives that shop's badge). One row per order and shop."""
+    id=models.UUIDField(primary_key=True,default=uuid.uuid4,editable=False)
+    order=models.ForeignKey(OnlineOrder,on_delete=models.CASCADE,related_name='acks')
+    branch=models.ForeignKey(Branch,on_delete=models.CASCADE,related_name='+')
+    at=models.DateTimeField(default=timezone.now)
+    user=models.ForeignKey(settings.AUTH_USER_MODEL,on_delete=models.SET_NULL,null=True,blank=True,related_name='+')
+    class Meta:constraints=[models.UniqueConstraint(fields=['order','branch'],name='onlineack_order_branch')]
+
+
+class OnlineOrderEvent(models.Model):
+    """Every step of an online order, kept for good: who did what and when. Never edited or deleted."""
+    id=models.UUIDField(primary_key=True,default=uuid.uuid4,editable=False)
+    order=models.ForeignKey(OnlineOrder,on_delete=models.CASCADE,related_name='events')
+    at=models.DateTimeField(default=timezone.now,db_index=True)
+    user=models.ForeignKey(settings.AUTH_USER_MODEL,on_delete=models.SET_NULL,null=True,blank=True,related_name='+')
+    kind=models.CharField(max_length=40)
+    from_stage=models.CharField(max_length=40,blank=True)
+    to_stage=models.CharField(max_length=40,blank=True)
+    note=models.TextField(blank=True)
+    class Meta:ordering=['at','pk']
+
+
+class OnlineOrderLine(models.Model):
+    id=models.UUIDField(primary_key=True,default=uuid.uuid4,editable=False)
+    order=models.ForeignKey(OnlineOrder,on_delete=models.CASCADE,related_name='lines')
+    product=models.ForeignKey(Product,on_delete=models.PROTECT)
+    condition=models.CharField(max_length=40,blank=True)
+    pta_status=models.CharField(max_length=20,blank=True)
+    device_type=models.CharField(max_length=30,blank=True)
+    quantity=models.PositiveIntegerField()
+    unit_price=models.DecimalField(max_digits=18,decimal_places=2)
+    class Meta:ordering=['id']
+
+
+class OnlineAllocation(models.Model):
+    """Which shop (and which exact phone) supplies a line. While the order is New this stock is reserved; the shop cannot sell it elsewhere."""
+    id=models.UUIDField(primary_key=True,default=uuid.uuid4,editable=False)
+    line=models.ForeignKey(OnlineOrderLine,on_delete=models.CASCADE,related_name='allocations')
+    product=models.ForeignKey(Product,on_delete=models.PROTECT)
+    branch=models.ForeignKey(Branch,on_delete=models.PROTECT)
+    device=models.ForeignKey(Device,on_delete=models.PROTECT,null=True,blank=True)
+    quantity=models.DecimalField(max_digits=18,decimal_places=3,default=1)
